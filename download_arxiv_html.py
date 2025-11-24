@@ -1,91 +1,332 @@
-import requests
-import feedparser
+'''import arxiv
+import re
 import time
-import json
-import os
+from pathlib import Path
 
-# --- 1. Configurazione della Ricerca e Output ---
-# La query cerca "Entity resolution" O "Entity matching" nell'abstract o nel titolo
-SEARCH_QUERY = 'all:("Entity resolution" OR "Entity matching")'
-BASE_URL = 'http://export.arxiv.org/api/query?'
-MAX_RESULTS_PER_PAGE = 100
-TOTAL_MAX_RESULTS = 500  # Numero massimo di articoli da recuperare (modifica se necessario)
-OUTPUT_FILE = 'corpus_metadata.json' # Il file verrà salvato nella radice del progetto
-# -----------------------------------------------
+# Query permissiva ma ragionevole
+QUERY = '(all:entity AND (all:resolution OR all:matching))'
 
-def get_articles_from_arxiv():
-    """
-    Recupera i metadati degli articoli da arXiv in base a SEARCH_QUERY e li salva in un file JSON.
-    """
-    corpus = []
-    start_index = 0
+DELAY = 1.0
+MAX_RESULTS = 5000
 
-    print(f"Avvio della ricerca per: {SEARCH_QUERY}")
+# pattern per cercare solo le frasi esatte (con eventuali - o /)
+PATTERNS = [
+    re.compile(r'\bentity[\s\-/]+resolution\b', re.IGNORECASE),
+    re.compile(r'\bentity[\s\-/]+matching\b', re.IGNORECASE),
+]
 
-    while start_index < TOTAL_MAX_RESULTS:
-        # Costruzione dei parametri per la richiesta API
-        query_params = {
-            'search_query': SEARCH_QUERY,
-            'start': start_index,
-            'max_results': MAX_RESULTS_PER_PAGE,
-            'sortBy': 'submittedDate',
-            'sortOrder': 'descending',
-            'id_list': ''
-        }
+def matches_phrase(text: str) -> bool:
+    """Ritorna True se una frase esatta è trovata nel testo."""
+    if not text:
+        return False
+    for p in PATTERNS:
+        if p.search(text):
+            return True
+    return False
 
-        try:
-            # Invio della richiesta HTTP
-            response = requests.get(BASE_URL, params=query_params)
-            response.raise_for_status() # Solleva un errore per codici di stato 4xx/5xx
-        except requests.exceptions.RequestException as e:
-            print(f"ERRORE nella richiesta HTTP: {e}")
-            break
+def main():
+    client = arxiv.Client()
+    search = arxiv.Search(
+        query=QUERY,
+        max_results=MAX_RESULTS,
+        sort_by=arxiv.SortCriterion.Relevance
+    )
 
-        # Parsing della risposta XML/Atom
-        feed = feedparser.parse(response.text)
+    found = []
+    examined = 0
 
-        if not feed.entries:
-            print(f"Nessun altro risultato trovato dopo l'indice {start_index}. Totale recuperato: {len(corpus)}")
-            break
+    print("Filtro locale su title/abstract per frasi esatte…\n")
 
-        print(f"-> Recuperati {len(feed.entries)} articoli (indice di partenza: {start_index})")
+    for result in client.results(search):
+        examined += 1
 
-        for entry in feed.entries:
-            # Estrazione e pulizia dei dati
-            arxiv_id = entry.id.split('/abs/')[-1]
-            title = entry.title.replace('\n', ' ').strip()
-            abstract = entry.summary.replace('\n', ' ').strip()
+        arxiv_id = result.get_short_id()
+        title = (result.title or "").strip()
+        summary = (result.summary or "").strip()
 
-            # Trova l'URL del PDF
-            pdf_url = next((link['href'] for link in entry.links if link.get('type') == 'application/pdf'), None)
+        # titolo o abstract contengono la frase esatta?
+        if matches_phrase(title) or matches_phrase(summary):
+            print(f"[OK] {arxiv_id}  — {title}")
+            found.append((arxiv_id, title))
+        else:
+            print(f"[NO] {arxiv_id}")
 
-            if pdf_url:
-                corpus.append({
-                    'arxiv_id': arxiv_id,
-                    'title': title,
-                    'abstract': abstract,
-                    'pdf_url': pdf_url
-                })
+        time.sleep(DELAY)
 
-        # Aggiornamento dell'indice per la prossima "pagina" di risultati
-        start_index += MAX_RESULTS_PER_PAGE
+    print("\n--- RISULTATI FINALI ---")
+    print(f"Articoli esaminati: {examined}")
+    print(f"Articoli che contengono la frase esatta: {len(found)}")
+    for aid, t in found:
+        print(f" - {aid}: {t}")
 
-        # Pausa per rispettare il limite di richieste di arXiv
-        time.sleep(3)
+    return found
 
-        # --- 2. Salvataggio del Corpus in JSON ---
+if __name__ == "__main__":
+    main()
+#stampa: 
+#Articoli esaminati: 1506
+#Articoli che contengono la frase esatta: 309
+'''
+
+
+
+
+
+
+
+
+'''import arxiv
+import re
+import time
+from pathlib import Path
+import requests
+
+# --- QUERY ---
+QUERY = '(all:entity AND (all:resolution OR all:matching))'
+MAX_RESULTS = 5000
+
+# --- DELAY PER EVITARE BLOCCO IP ---
+DELAY = 5.0  # aumenta a 8–10 se scarichi molti file
+
+# --- CARTELLE ---
+OUTPUT_DIR = Path("arxiv_html_corpus")
+HTML_DIR = OUTPUT_DIR / "html"
+HTML_DIR.mkdir(parents=True, exist_ok=True)
+
+# --- HEADER PER EVITARE 403 ---
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/116.0 Safari/537.36"
+    )
+}
+
+# --- PATTERN DELLE FRASI ESATTE ---
+PATTERNS = [
+    re.compile(r'\bentity[\s\-/]+resolution\b', re.IGNORECASE),
+    re.compile(r'\bentity[\s\-/]+matching\b', re.IGNORECASE),
+]
+
+def matches_phrase(text: str) -> bool:
+    if not text:
+        return False
+    return any(p.search(text) for p in PATTERNS)
+
+# --- DOWNLOAD HTML SICURO ---
+def download_html(arxiv_id: str):
+    url = f"https://arxiv.org/html/{arxiv_id}"
+    out_file = HTML_DIR / f"{arxiv_id}.html"
+
+    # non riscaricare file già ottenuto
+    if out_file.exists():
+        return out_file
+
     try:
-        with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
-            json.dump(corpus, f, ensure_ascii=False, indent=4)
+        r = requests.get(url, headers=HEADERS, timeout=20)
 
-        full_path = os.path.abspath(OUTPUT_FILE)
-        print(f"\nMetadati salvati in {OUTPUT_FILE} (Totale: {len(corpus)} articoli).")
-        print(f"Percorso assoluto del file: {full_path}")
-    except IOError as e:
-        print(f"ERRORE nel salvataggio del file JSON: {e}")
+        if r.status_code == 404:
+            print(f"   ⚠ HTML non disponibile (404)")
+            return None
 
-    return corpus
+        r.raise_for_status()
+        out_file.write_text(r.text, encoding="utf-8")
+        return out_file
 
-if __name__ == '__main__':
-    # Ricorda di eseguire: pip install requests feedparser
-    get_articles_from_arxiv()
+    except Exception as e:
+        print(f"   ⚠ Errore download: {e}")
+        return None
+
+    finally:
+        time.sleep(DELAY)
+
+
+# --- MAIN ---
+def main():
+    client = arxiv.Client()
+    search = arxiv.Search(
+        query=QUERY,
+        max_results=MAX_RESULTS,
+        sort_by=arxiv.SortCriterion.Relevance
+    )
+
+    found = []
+    examined = 0
+
+    print("Filtro su title/abstract + download HTML…\n")
+
+    for result in client.results(search):
+        examined += 1
+        arxiv_id = result.get_short_id()
+        title = (result.title or "").strip()
+        summary = (result.summary or "").strip()
+
+        # match su titolo o abstract
+        if matches_phrase(title) or matches_phrase(summary):
+            print(f"[OK] {arxiv_id} — {title}")
+            found.append(arxiv_id)
+
+            html_path = download_html(arxiv_id)
+            if html_path:
+                print(f"   ✔ HTML salvato: {html_path.name}")
+            else:
+                print("   ✘ HTML non scaricato")
+
+        else:
+            print(f"[NO] {arxiv_id}")
+
+        time.sleep(DELAY)
+
+    print("\n--- RISULTATI FINALI ---")
+    print(f"Articoli esaminati: {examined}")
+    print(f"Articoli che contengono la frase esatta: {len(found)}")
+    for aid in found:
+        print(f" - {aid}")
+
+    return found
+
+
+if __name__ == "__main__":
+    main()
+    #si blocca dopo un po' '''
+
+
+import arxiv
+import re
+import time
+from pathlib import Path
+import requests
+import csv
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# --- CONFIG ---
+QUERY = '(all:entity AND (all:resolution OR all:matching))'
+MAX_RESULTS = 5000
+DELAY = 5.0        # delay tra retry
+RETRY = 3          # retry per download falliti
+MAX_THREADS = 3    # numero di thread simultanei
+
+# --- CARTELLE ---
+OUTPUT_DIR = Path("arxiv_html_corpus")
+HTML_DIR = OUTPUT_DIR / "html"
+HTML_DIR.mkdir(parents=True, exist_ok=True)
+
+LOG_FILE = OUTPUT_DIR / "downloaded_log.csv"
+
+# --- HEADER ---
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/116.0 Safari/537.36"
+    )
+}
+
+# --- PATTERN ---
+PATTERNS = [
+    re.compile(r'\bentity[\s\-/]+resolution\b', re.IGNORECASE),
+    re.compile(r'\bentity[\s\-/]+matching\b', re.IGNORECASE),
+]
+
+def matches_phrase(text: str) -> bool:
+    if not text:
+        return False
+    return any(p.search(text) for p in PATTERNS)
+
+def download_html(arxiv_id: str):
+    """Scarica HTML con retry e delay."""
+    out_file = HTML_DIR / f"{arxiv_id}.html"
+    if out_file.exists():
+        return out_file
+
+    url = f"https://arxiv.org/html/{arxiv_id}"
+    for attempt in range(1, RETRY + 1):
+        try:
+            r = requests.get(url, headers=HEADERS, timeout=20)
+            if r.status_code == 404:
+                print(f"   ⚠ HTML non disponibile (404) per {arxiv_id}")
+                return None
+            r.raise_for_status()
+            out_file.write_text(r.text, encoding="utf-8")
+            return out_file
+        except Exception as e:
+            print(f"   ⚠ Errore {arxiv_id} (tentativo {attempt}): {e}")
+            time.sleep(DELAY)
+    return None
+
+def load_processed():
+    processed = set()
+    if LOG_FILE.exists():
+        with open(LOG_FILE, newline="", encoding="utf-8") as f:
+            reader = csv.reader(f)
+            processed = {row[0] for row in reader}
+    return processed
+
+def save_to_log(arxiv_id: str, title: str):
+    with open(LOG_FILE, "a", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow([arxiv_id, title])
+
+def process_paper(result):
+    """Filtra e scarica HTML di un singolo paper."""
+    arxiv_id = result.get_short_id()
+    title = (result.title or "").strip()
+    summary = (result.summary or "").strip()
+
+    if matches_phrase(title) or matches_phrase(summary):
+        print(f"[OK] {arxiv_id} — {title}")
+        html_path = download_html(arxiv_id)
+        if html_path:
+            print(f"   ✔ HTML salvato: {html_path.name}")
+        else:
+            print(f"   ✘ HTML non scaricato")
+        save_to_log(arxiv_id, title)
+        return arxiv_id
+    else:
+        print(f"[NO] {arxiv_id}")
+        save_to_log(arxiv_id, title)
+        return None
+
+def main():
+    client = arxiv.Client()
+    search = arxiv.Search(
+        query=QUERY,
+        max_results=MAX_RESULTS,
+        sort_by=arxiv.SortCriterion.Relevance
+    )
+
+    processed = load_processed()
+    found = []
+    examined = 0
+    tasks = []
+
+    print("Filtro su title/abstract + download HTML multithread…\n")
+
+    with ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
+        for result in client.results(search):
+            examined += 1
+            arxiv_id = result.get_short_id()
+
+            if arxiv_id in processed:
+                print(f"[SKIP] {arxiv_id} già processato")
+                continue
+
+            # invia al thread pool solo i paper da processare
+            tasks.append(executor.submit(process_paper, result))
+
+        # raccogli risultati
+        for future in as_completed(tasks):
+            res = future.result()
+            if res:
+                found.append(res)
+
+    print("\n--- RISULTATI FINALI ---")
+    print(f"Articoli esaminati: {examined}")
+    print(f"Articoli che contengono la frase esatta: {len(found)}")
+    for aid in found:
+        print(f" - {aid}")
+
+    return found
+
+if __name__ == "__main__":
+    main()
