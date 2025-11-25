@@ -29,7 +29,6 @@ Thumbs.db
 # -------------------------------
 # Cartelle di corpus (HTML/XML/JSON)
 arxiv_html_corpus/
-pubmed_html_corpus/
 html_corpus/
 downloads/
 html/
