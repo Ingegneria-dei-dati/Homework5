@@ -372,6 +372,8 @@ import re
 import datetime
 from bs4 import BeautifulSoup, element
 from elasticsearch import Elasticsearch
+from pathlib import Path
+from extract_tables import extract_tables_from_html
 
 # ============================================================
 # 1. CONNESSIONE ELASTICSEARCH
@@ -657,6 +659,10 @@ def index_document(doc):
     except Exception as e:
         print(f"[ERRORE] Indicizzazione file {doc['file_path']} fallita: {e}")
 
+
+
+#QUESTO NON ESTRAE LE TABELLE 
+'''
 def index_directory(path, source):
     """Processa e indicizza tutti i file HTML in una directory."""
     # Gestisce sia i percorsi Unix che Windows
@@ -681,6 +687,49 @@ def index_directory(path, source):
         print(f"[OK] Indicizzato: {file}")
 
     print(f"Indicizzazione completata per {path}. Documenti indicizzati: {indexed_count}")
+'''
+def process_file(filepath: str, source: str):
+    # 1) leggi HTML
+    html = Path(filepath).read_text(encoding="utf-8", errors="ignore")
+
+    # 2) parsalo con la tua parse_html esistente
+    doc = parse_html(filepath)
+    if not doc:
+        return
+
+    # 3) paper_id: per ora puoi usare l'hash o il nome file
+    paper_id = Path(filepath).stem
+
+    # 4) estrai tabelle
+    tables = extract_tables_from_html(html, paper_id=paper_id)
+
+    # 5) indicizza il documento principale (già lo fai)
+    doc["source"] = source
+    index_document(doc)
+
+    # 6) (opzionale) indicizza le tabelle in un indice "tables"
+    # for t in tables:
+    #     index_table_in_es(t)
+
+def index_directory(path, source):
+    """Processa e indicizza tutti i file HTML in una directory, incluse le tabelle."""
+    
+    html_files = glob.glob(os.path.join(path, "*.html"))
+    print(f"\nIndicizzazione cartella: {path}")
+    print(f"File trovati: {len(html_files)}\n")
+
+    indexed_count = 0
+
+    for file in html_files:
+        try:
+            process_file(file, source)   # 👈 ORA richiama la funzione completa
+            indexed_count += 1
+            print(f"[OK] Processato: {file}")
+        except Exception as e:
+            print(f"[ERRORE] Impossibile processare {file}: {e}")
+
+    print(f"Indicizzazione completata per {path}. Documenti indicizzati: {indexed_count}")
+
 
 # ============================================================
 # 6. FUNZIONE DI TEST ISOLATO PER DEBUG
